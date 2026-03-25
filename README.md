@@ -198,6 +198,15 @@ artifacts/runs/<run_id>/summary.json
         <br />
         Discord
       </td>
+      <td align="center">
+        <img
+          src="assets/HKUSTGZ_DIAL.jpg"
+          alt="WeChat official account QR code"
+          width="144"
+        />
+        <br />
+        WeChat Official Account
+      </td>
     </tr>
   </table>
 </div>
