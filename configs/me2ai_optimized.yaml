@@ -1,0 +1,73 @@
+# ============================================================
+# KDD Cup 2026 DataAgent-Bench — me2AI 优化配置
+# ============================================================
+
+dataset:
+  root_path: data/public/input
+
+agent:
+  # ── 公共参数 ──────────────────────────────────────────────
+  api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key: ${DASHSCOPE_API_KEY}
+  temperature: 0.0
+  max_retries_per_step: 2
+
+  # ── 兜底模型（角色/难度未单独配置时使用）─────────────────
+  model: qwen3-coder-plus
+
+  # ═══════════════════════════════════════════════════════════
+  # 模型路由策略（角色 × 难度）
+  #
+  # 实测可用模型一览（充值后）：
+  #   qwen3-max             旗舰推理，最贵，无需 extra_body
+  #   qwen3-coder-plus      最强 Coder，SQL/Python 最专业，中等价格
+  #   qwen3-coder-flash     快速 Coder，便宜，无需 extra_body
+  #   qwen3.5-flash         新一代超便宜通用模型，适合轻量验证
+  #   qwen-coder-turbo-latest  旧版 Coder，兼容性好，便宜
+  #   qwen2.5-coder-32b-instruct  旧版大 Coder 模型
+  #   qwen3-8b/14b/32b      小模型，需 enable_thinking=False（代码自动处理）
+  #
+  # 每次完整 benchmark（50任务）API 调用分布：
+  #   Executor ~392次(80%) + Planner 50次(10%) + Verifier 50次(10%)
+  #
+  # 节省逻辑 vs 全量 qwen3-max：
+  #   easy executor  15×8=120次 → qwen3-coder-flash  省 ~70%
+  #   medium executor 23×8=184次 → qwen3-coder-plus  省 ~30% 且更专业
+  #   all verifier   50次       → qwen3.5-flash      省 ~90%
+  #   hard/extreme planner 12次 → qwen3-coder-plus    planner只产JSON计划，不需要thinking
+  # ═══════════════════════════════════════════════════════════
+
+  # ── Planner（每任务1次，理解任务结构 + 规划数据源）────────
+  # 注意：qwen3-max 默认开启 thinking 模式，planner 单次调用可耗时 3-8 分钟
+  # planner 只需输出简单 JSON 计划，不需要深度推理 → 全部用 coder-plus（快速、无 thinking 延迟）
+  model_planner_easy:    qwen3-coder-flash   # easy 结构简单，flash 够用
+  model_planner_medium:  qwen3-coder-plus    # medium 以代码分析为主
+  model_planner_hard:    qwen3-coder-plus    # hard planner 只需JSON计划，coder-plus够用且快
+  model_planner_extreme: qwen3-coder-plus    # extreme planner 同理；executor 才用 qwen3-max
+
+  # ── Executor（每任务7-15次，写 SQL/Python 的主力）────────
+  model_executor_easy:    qwen3-coder-flash      # easy：简单查询，flash 快且省钱
+  model_executor_medium:  qwen3-coder-plus       # medium：SQL JOIN + 多数据源
+  model_executor_hard:    qwen3-coder-plus       # hard：coder 比 max 更擅长代码
+  model_executor_extreme: qwen3-max              # extreme：最复杂推理
+
+  # ── Verifier（每任务1次，纯文本判断答案是否合理）────────
+  # 只需读题目 + 看结果 → 最便宜的 flash 完全够用
+  model_verifier: qwen3.5-flash
+
+  # ── Agent 控制 ───────────────────────────────────────────
+  mode: hierarchical
+  verifier_enabled: true
+  max_verification_rounds: 2
+
+  # ── 难度自适应步骤上限 ───────────────────────────────────
+  max_steps_easy:    15
+  max_steps_medium:  20
+  max_steps_hard:    30
+  max_steps_extreme: 40
+  max_steps: 20
+
+run:
+  output_dir: artifacts/runs
+  max_workers: 8
+  task_timeout_seconds: 1500  # hard/extreme tasks need 80-250s each; extra buffer for API rate limiting under concurrency

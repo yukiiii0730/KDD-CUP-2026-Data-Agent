@@ -38,13 +38,20 @@
    uv sync
    ```
 
-4. 检查数据集根目录是否可见：
+4. 通过环境文件配置 API key：
+
+  ```bash
+  cp .env.example .env
+  # 编辑 .env，设置 DASHSCOPE_API_KEY=...
+  ```
+
+5. 检查数据集根目录是否可见：
 
    ```bash
    uv run dabench status --config configs/react_baseline.example.yaml
    ```
 
-5. 运行 baseline：
+6. 运行 baseline：
 
    ```bash
    uv run dabench run-benchmark --config configs/react_baseline.example.yaml
@@ -78,24 +85,41 @@ hidden test set 只提供 `input/`，不会包含 `output/`。
 
 ## 配置
 
-示例配置文件位于 `configs/react_baseline.example.yaml`。
+示例配置文件位于 `configs/react_baseline.example.yaml`，优化配置位于 `configs/me2ai_optimized.yaml`。
 
 ```yaml
 dataset:
   root_path: data/public/input
 
 agent:
-  model: YOUR_MODEL_NAME
-  api_base: YOUR_API_BASE_URL
-  api_key: YOUR_API_KEY
-  max_steps: 16
+  model: qwen3-coder-plus      # 兜底模型
+  api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key: ${DASHSCOPE_API_KEY}
   temperature: 0.0
+  max_retries_per_step: 2
+  mode: hierarchical           # "react" 或 "hierarchical"
+
+  # 按角色+难度的模型路由（hierarchical 模式）
+  model_planner_easy:    qwen3-coder-flash
+  model_planner_medium:  qwen3-coder-plus
+  model_planner_hard:    qwen3-coder-plus
+  model_planner_extreme: qwen3-coder-plus
+  model_executor_easy:   qwen3-coder-flash
+  model_executor_medium: qwen3-coder-plus
+  model_executor_hard:   qwen3-coder-plus
+  model_executor_extreme: qwen3-max
+  model_verifier:        qwen3.5-flash
+
+  # 难度自适应步骤上限
+  max_steps_easy:    15
+  max_steps_medium:  20
+  max_steps_hard:    30
+  max_steps_extreme: 40
 
 run:
   output_dir: artifacts/runs
-  run_id:
-  max_workers: 4
-  task_timeout_seconds: 600
+  max_workers: 8
+  task_timeout_seconds: 1500
 ```
 
 配置字段说明：
@@ -103,10 +127,15 @@ run:
 | 字段 | 含义 |
 | --- | --- |
 | `dataset.root_path` | 公开 demo `input/` 数据集根目录。相对路径按项目根目录解析。 |
-| `agent.model` | 模型名称。 |
+| `agent.model` | 兜底模型名称，当特定角色/难度未配置时使用。 |
+| `agent.mode` | Agent 模式：`react`（单层）或 `hierarchical`（Planner → Executor → Verifier）。 |
 | `agent.api_base` | OpenAI-compatible 接口根地址。 |
-| `agent.api_key` | API key，直接从配置文件读取。 |
-| `agent.max_steps` | 单个任务允许的最大 ReAct 步数。 |
+| `agent.api_key` | API key。支持环境变量展开，如 `${DASHSCOPE_API_KEY}`。项目会自动读取仓库根目录 `.env`。 |
+| `agent.model_planner_*` | 各难度的 Planner 模型（hierarchical 模式）。 |
+| `agent.model_executor_*` | 各难度的 Executor 模型（hierarchical 模式）。 |
+| `agent.model_verifier` | Verifier 模型（hierarchical 模式）。 |
+| `agent.max_steps_*` | 各难度的步骤上限（hierarchical 模式）。 |
+| `agent.max_retries_per_step` | 当模型输出无法解析或工具调用失败时，当前步骤允许的重试次数。 |
 | `agent.temperature` | 模型采样温度。 |
 | `run.output_dir` | 运行产物输出目录。 |
 | `run.run_id` | 可选，指定运行目录名。不传时默认使用 UTC 时间戳；必须是单个目录名，已存在会报错。 |
@@ -134,13 +163,16 @@ uv run dabench <command> --config PATH [options]
 
 | 工具 | 作用 | 输入 |
 | --- | --- | --- |
-| `list_context` | 列出 `context/` 下的文件和目录。 | `max_depth` |
+| `list_context` | 列出 `context/` 下的文件和目录（含文件大小）。 | `max_depth` |
 | `read_csv` | 读取 CSV 预览。 | `path`、`max_rows` |
 | `read_json` | 读取 JSON 预览。 | `path`、`max_chars` |
-| `read_doc` | 读取文本文档预览。 | `path`、`max_chars` |
+| `read_doc` | 读取文本文档预览（推荐用于 ≤20KB 的文件）。 | `path`、`max_chars` |
+| `search_in_doc` | 在（可能很大的）文档中搜索关键词，返回匹配行及上下文。适用于 >20KB 的文件。 | `path`、`query`、`context_lines`、`max_matches` |
+| `read_doc_page` | 按字符偏移分页读取大文档，适用于超过 8000 字符的文件。 | `path`、`start_char`、`max_chars` |
+| `query_csv_duckdb` | 直接对 CSV 文件执行 DuckDB SQL（支持 JOIN、GROUP BY、HAVING、ORDER BY）。 | `sql`、`limit` |
 | `inspect_sqlite_schema` | 查看 SQLite / DB 文件中的表结构。 | `path` |
 | `execute_context_sql` | 对 `context/` 内 SQLite / DB 文件执行只读 SQL。 | `path`、`sql`、`limit` |
-| `execute_python` | 在任务 `context/` 目录内执行任意 Python 代码。 | `code` |
+| `execute_python` | 在任务 `context/` 目录内执行任意 Python 代码。可用库：pandas、polars、duckdb、numpy。 | `code` |
 | `answer` | 提交最终答案表格并结束当前任务。 | `columns`、`rows` |
 
 所有文件路径都必须是相对于任务 `context/` 目录的相对路径。
@@ -165,6 +197,11 @@ artifacts/runs/<run_id>/<task_id>/
 ```text
 artifacts/runs/<run_id>/summary.json
 ```
+
+另外会写入便于 badcase 分析的执行记录：
+
+- `artifacts/runs/<run_id>/task_runs.jsonl`（每个任务一条记录）
+- `artifacts/runs/run_history.jsonl`（每次 benchmark 一条记录）
 
 ## Contact
 
@@ -219,7 +256,10 @@ artifacts/runs/<run_id>/summary.json
 | `src/data_agent_baseline/tools/filesystem.py` | `list_context`、`read_csv`、`read_json`、`read_doc` |
 | `src/data_agent_baseline/tools/python_exec.py` | `execute_python` |
 | `src/data_agent_baseline/tools/sqlite.py` | `inspect_sqlite_schema`、`execute_context_sql` |
-| `src/data_agent_baseline/tools/registry.py` | 工具注册与终止型 `answer` |
-| `src/data_agent_baseline/agents/prompt.py` | system prompt、task prompt、observation prompt |
-| `src/data_agent_baseline/agents/react.py` | 基于 JSON action 协议的 ReAct runtime |
-| `src/data_agent_baseline/run/runner.py` | 单任务和批量运行逻辑 |
+| `src/data_agent_baseline/tools/registry.py` | 工具注册、`query_csv_duckdb`、`search_in_doc`、`read_doc_page`、答案后处理 |
+| `src/data_agent_baseline/agents/model.py` | `OpenAIModelAdapter`（含重试）、`ModelRouter` |
+| `src/data_agent_baseline/agents/prompt.py` | 含列优先和大文档规则的系统提示 |
+| `src/data_agent_baseline/agents/react.py` | 含紧急提交机制的 ReAct runtime |
+| `src/data_agent_baseline/agents/hierarchical.py` | 三阶段分层 Agent（Planner → Executor → Verifier）|
+| `src/data_agent_baseline/run/runner.py` | 含预串行规划阶段的批量运行逻辑 |
+| `src/data_agent_baseline/run/log_generator.py` | 每次 benchmark 后自动在 `logs/` 生成 Markdown 报告 |

@@ -19,6 +19,7 @@ from data_agent_baseline.tools.registry import ToolRegistry
 @dataclass(frozen=True, slots=True)
 class ReActAgentConfig:
     max_steps: int = 16
+    max_retries_per_step: int = 1
 
 
 def _strip_json_fence(raw_response: str) -> str:
@@ -80,7 +81,13 @@ class ReActAgent:
         self.config = config or ReActAgentConfig()
         self.system_prompt = system_prompt or REACT_SYSTEM_PROMPT
 
-    def _build_messages(self, task: PublicTask, state: AgentRuntimeState) -> list[ModelMessage]:
+    def _build_messages(
+        self,
+        task: PublicTask,
+        state: AgentRuntimeState,
+        retry_error: str | None = None,
+        steps_remaining: int | None = None,
+    ) -> list[ModelMessage]:
         system_content = build_system_prompt(
             self.tools.describe_for_prompt(),
             system_prompt=self.system_prompt,
@@ -92,49 +99,90 @@ class ReActAgent:
             messages.append(
                 ModelMessage(role="user", content=build_observation_prompt(step.observation))
             )
+        if retry_error is not None:
+            messages.append(
+                ModelMessage(
+                    role="user",
+                    content=(
+                        "Your previous response could not be executed. "
+                        f"Error: {retry_error}\n"
+                        "Please try the same step again and return exactly one valid JSON "
+                        "object in a single ```json fenced block with keys thought, action, action_input."
+                    ),
+                )
+            )
+        if steps_remaining is not None and steps_remaining <= 2:
+            messages.append(
+                ModelMessage(
+                    role="user",
+                    content=(
+                        f"⚠️ URGENT: You have only {steps_remaining} step(s) remaining. "
+                        "You MUST call the `answer` tool NOW with your best current answer. "
+                        "Do NOT use any other tool. Submitting a partial answer is better than no answer."
+                    ),
+                )
+            )
         return messages
 
     def run(self, task: PublicTask) -> AgentRunResult:
         state = AgentRuntimeState()
         for step_index in range(1, self.config.max_steps + 1):
-            raw_response = self.model.complete(self._build_messages(task, state))
-            try:
-                model_step = parse_model_step(raw_response)
-                tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
-                observation = {
-                    "ok": tool_result.ok,
-                    "tool": model_step.action,
-                    "content": tool_result.content,
-                }
-                step_record = StepRecord(
-                    step_index=step_index,
-                    thought=model_step.thought,
-                    action=model_step.action,
-                    action_input=model_step.action_input,
-                    raw_response=raw_response,
-                    observation=observation,
-                    ok=tool_result.ok,
-                )
-                state.steps.append(step_record)
-                if tool_result.is_terminal:
-                    state.answer = tool_result.answer
-                    break
-            except Exception as exc:
-                observation = {
-                    "ok": False,
-                    "error": str(exc),
-                }
-                state.steps.append(
-                    StepRecord(
-                        step_index=step_index,
-                        thought="",
-                        action="__error__",
-                        action_input={},
-                        raw_response=raw_response,
-                        observation=observation,
-                        ok=False,
+            retry_error: str | None = None
+            raw_response = ""
+            max_attempts = max(1, self.config.max_retries_per_step + 1)
+            steps_remaining = self.config.max_steps - step_index + 1
+            for attempt in range(1, max_attempts + 1):
+                raw_response = self.model.complete(
+                    self._build_messages(
+                        task,
+                        state,
+                        retry_error=retry_error,
+                        steps_remaining=steps_remaining,
                     )
                 )
+                try:
+                    model_step = parse_model_step(raw_response)
+                    tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
+                    observation = {
+                        "ok": tool_result.ok,
+                        "tool": model_step.action,
+                        "content": tool_result.content,
+                    }
+                    step_record = StepRecord(
+                        step_index=step_index,
+                        thought=model_step.thought,
+                        action=model_step.action,
+                        action_input=model_step.action_input,
+                        raw_response=raw_response,
+                        observation=observation,
+                        ok=tool_result.ok,
+                    )
+                    state.steps.append(step_record)
+                    if tool_result.is_terminal:
+                        state.answer = tool_result.answer
+                    break
+                except Exception as exc:
+                    retry_error = str(exc)
+                    if attempt == max_attempts:
+                        observation = {
+                            "ok": False,
+                            "error": retry_error,
+                            "attempts": attempt,
+                        }
+                        state.steps.append(
+                            StepRecord(
+                                step_index=step_index,
+                                thought="",
+                                action="__error__",
+                                action_input={},
+                                raw_response=raw_response,
+                                observation=observation,
+                                ok=False,
+                            )
+                        )
+
+            if state.answer is not None:
+                break
 
         if state.answer is None and state.failure_reason is None:
             state.failure_reason = "Agent did not submit an answer within max_steps."

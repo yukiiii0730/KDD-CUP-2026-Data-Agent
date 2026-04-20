@@ -234,6 +234,14 @@ def run_benchmark_command(
                 config=app_config,
                 limit=limit,
                 progress_callback=on_task_complete,
+                config_path=str(config),
+                optimizations_this_run=[
+                    "Multi-model routing (planner/executor/verifier by difficulty)",
+                    "search_in_doc + read_doc_page tools for large documents",
+                    "Emergency submit: warn agent when ≤2 steps remain",
+                    "Auto-split full_name → first_name/last_name post-processor",
+                    "Prompt rules: event name vs ID, ratio vs count, monthly vs annual",
+                ],
             )
         except (ValueError, FileExistsError) as exc:
             raise typer.BadParameter(str(exc), param_hint="run.run_id") from exc
